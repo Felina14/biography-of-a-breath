@@ -1,0 +1,25 @@
+# secrets
+.env
+
+# build output and vendored dependencies
+backend/build/
+backend/agentcore/build/
+backend/agentcore/.venv-tk/
+.bedrock_agentcore.yaml
+.venv/
+__pycache__/
+*.pyc
+
+# generated site (contains the Amazon Location API key at build time)
+web/index.html
+
+# large or regenerable data
+data/
+out/
+video/
+Claude outputs/
+article/
+*.bak_panel
+
+# os
+.DS_Store

@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Biography of a Breath - live journey backend (GFS ingest every 6 h + journey API)
+Parameters:
+  SiteOrigin: {Type: String, Default: "https://d28nym7zkli7me.cloudfront.net"}
+  AgentRuntimeArn: {Type: String, Default: "", Description: "Puff narrator on Bedrock AgentCore Runtime (set by backend/agentcore/deploy_agentcore.sh)"}
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      BucketEncryption: {ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]}
+  IngestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]}
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies: [{PolicyName: put-cube, PolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Action: s3:PutObject, Resource: !Sub "${DataBucket.Arn}/cube/*"}]}}]
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]}
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: read-data-and-narrate
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: s3:GetObject, Resource: !Sub "${DataBucket.Arn}/*"}
+              - {Effect: Allow, Action: bedrock:InvokeModel, Resource: ["arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0", !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0", "arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0", !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0"]}
+              - {Effect: Allow, Action: polly:SynthesizeSpeech, Resource: "*"}
+              - {Effect: Allow, Action: geo-places:ReverseGeocode, Resource: !Sub "arn:aws:geo-places:${AWS::Region}::provider/default"}
+              - {Effect: Allow, Action: bedrock-agentcore:InvokeAgentRuntime, Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/*"}
+  IngestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: app.handler
+      Code: build/ingest
+      MemorySize: 2048
+      Timeout: 900
+      Role: !GetAtt IngestRole.Arn
+      Environment: {Variables: {DATA_BUCKET: !Ref DataBucket}}
+  IngestSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(30 4,10,16,22 * * ? *)"   # ~4.5 h after each GFS cycle, when f006 is published
+      Targets: [{Arn: !GetAtt IngestFunction.Arn, Id: ingest}]
+  IngestPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !Ref IngestFunction, Action: lambda:InvokeFunction, Principal: events.amazonaws.com, SourceArn: !GetAtt IngestSchedule.Arn}
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: app.handler
+      Code: build/api
+      MemorySize: 1769
+      Timeout: 120
+      Role: !GetAtt ApiRole.Arn
+      Environment: {Variables: {DATA_BUCKET: !Ref DataBucket, AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn}}
+  ApiUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      AuthType: NONE
+      Cors: {AllowOrigins: [!Ref SiteOrigin, "http://localhost:8000"], AllowMethods: [GET], MaxAge: 3600}
+  ApiUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !Ref ApiFunction, Action: lambda:InvokeFunctionUrl, Principal: "*", FunctionUrlAuthType: NONE}
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties: {FunctionName: !Ref ApiFunction, Action: lambda:InvokeFunction, Principal: "*", InvokedViaFunctionUrl: true}
+Outputs:
+  ApiUrl: {Value: !GetAtt ApiUrl.FunctionUrl}
+  DataBucket: {Value: !Ref DataBucket}
+  IngestFunction: {Value: !Ref IngestFunction}

@@ -1,0 +1,4 @@
+bedrock-agentcore
+boto3
+numpy
+aws-opentelemetry-distro
